@@ -1,30 +1,63 @@
-import json
-import uuid
-import time
+# xui_api.py
+# X-UI API Client
+# Part 1: Core / Login / Session / Requests
+
 import requests
-
-from config import (
-    PANEL_URL,
-    PANEL_USERNAME,
-    PANEL_PASSWORD
-)
+import json
+import time
 
 
-class XUI:
+class XUI_API:
+    """
+    Client for interacting with 3X-UI / X-UI panel API
+    """
 
-    def __init__(self):
+    def __init__(self, host, username, password, timeout=15):
+        """
+        Initialize API client
 
-        self.url = PANEL_URL.rstrip("/")
+        host:
+            Example:
+            https://example.com:54321
 
-        self.username = PANEL_USERNAME
+        username:
+            Panel username
 
-        self.password = PANEL_PASSWORD
+        password:
+            Panel password
+        """
+
+        self.host = host.rstrip("/")
+        self.username = username
+        self.password = password
+
+        self.timeout = timeout
 
         self.session = requests.Session()
 
-        self.timeout = 20
+        self.session.headers.update({
+            "Accept": "application/json",
+            "Content-Type": "application/json"
+        })
 
-        self.logged = False
+        self.logged_in = False
+        self.login_time = None
+
+
+    # -----------------------------
+    # Internal URL builder
+    # -----------------------------
+
+    def _url(self, path):
+        """
+        Build full API URL
+        """
+
+        if not path.startswith("/"):
+            path = "/" + path
+
+        return self.host + path
+
 
 
     # -----------------------------
@@ -32,86 +65,107 @@ class XUI:
     # -----------------------------
 
     def login(self):
+        """
+        Login into X-UI panel
 
-        if self.logged:
-            return True
+        Endpoint:
+        /login
 
-        r = self.session.post(
+        Returns:
+            True / False
+        """
 
-            f"{self.url}/login",
+        url = self._url("/login")
 
-            json={
+        payload = {
+            "username": self.username,
+            "password": self.password
+        }
 
-                "username": self.username,
-                "password": self.password
+        try:
 
-            },
+            response = self.session.post(
+                url,
+                json=payload,
+                timeout=self.timeout
+            )
 
-            timeout=self.timeout
+            data = response.json()
 
-        )
+            if data.get("success"):
 
-        if r.status_code != 200:
+                self.logged_in = True
+                self.login_time = int(time.time())
 
-            raise Exception("Cannot connect to 3x-ui")
+                return True
 
-        data = r.json()
+            return False
 
-        if not data.get("success"):
 
-            raise Exception(data.get("msg", "Login Failed"))
+        except Exception as e:
 
-        self.logged = True
+            print("Login error:", e)
 
-        return True
+            return False
+
 
 
     # -----------------------------
-    # Request Helper
+    # Logout
     # -----------------------------
 
-    def post(self, endpoint, data=None):
+    def logout(self):
+        """
+        Logout current session
+        """
 
-        self.login()
+        try:
 
-        r = self.session.post(
+            url = self._url("/logout")
 
-            self.url + endpoint,
+            response = self.session.get(
+                url,
+                timeout=self.timeout
+            )
 
-            data=data,
+            data = response.json()
 
-            timeout=self.timeout
+            if data.get("success"):
 
-        )
+                self.logged_in = False
 
-        result = r.json()
-
-        if not result.get("success"):
-
-            raise Exception(result)
-
-        return result
+                return True
 
 
-    def get(self, endpoint):
+        except Exception:
 
-        self.login()
+            pass
 
-        r = self.session.get(
 
-            self.url + endpoint,
+        return False
 
-            timeout=self.timeout
 
-        )
 
-        result = r.json()
+    # -----------------------------
+    # Generic GET request
+    # -----------------------------
 
-        if not result.get("success"):
+    def get(self, endpoint, params=None):
+        """
+        Generic GET request
+        """
 
-            raise Exception(result)
+        try:
 
-        return result
+            url = self._url(endpoint)
+
+            response = self.session.get(
+                url,
+                params=params,
+                timeout=self.timeout
+            )
+
+            return self._parse_response(response)
 
 
     # -----------------------------
@@ -119,197 +173,551 @@ class XUI:
     # -----------------------------
 
     def get_inbounds(self):
+        """
+        Get all inbounds
+        """
 
-        result = self.get(
-
+        return self.get(
             "/panel/api/inbounds/list"
-
         )
-
-        return result["obj"]
 
 
     def get_inbound(self, inbound_id):
+        """
+        Get single inbound
+        """
 
-        inbounds = self.get_inbounds()
-
-        for inbound in inbounds:
-
-            if inbound["id"] == inbound_id:
-                return inbound
-
-        return None
-
-
-    def find_vless_inbound(self):
-
-        inbounds = self.get_inbounds()
-
-        for inbound in inbounds:
-
-            if inbound["protocol"] == "vless":
-
-                return inbound
-
-        raise Exception("No VLESS inbound found")
-    # -----------------------------
-    # UUID
-    # -----------------------------
-
-    def generate_uuid(self):
-        return str(uuid.uuid4())
+        return self.get(
+            f"/panel/api/inbounds/get/{inbound_id}"
+        )
 
 
     # -----------------------------
-    # Expire Time
+    # Client creation
     # -----------------------------
 
-    def expire_time(self, days):
-        return int((time.time() + days * 86400) * 1000)
-
-
-    # -----------------------------
-    # Subscription
-    # -----------------------------
-
-    def subscription_link(self, sub_id):
-        return f"{self.url}/sub/{sub_id}"
-
-
-    # -----------------------------
-    # Create VLESS User
-    # -----------------------------
-
-    def create_vless_user(
+    def add_client(
         self,
+        inbound_id,
         email,
-        volume_gb,
-        days,
-        inbound_id=None
+        uuid,
+        total_gb=0,
+        expiry_time=0,
+        enable=True
     ):
+        """
+        Add VLESS client to inbound
 
-        if inbound_id is None:
-            inbound = self.find_vless_inbound()
-        else:
-            inbound = self.get_inbound(inbound_id)
+        expiry_time:
+            Unix timestamp in milliseconds
 
-        inbound_id = inbound["id"]
+        total_gb:
+            Traffic limit in GB
+        """
 
-        client_uuid = self.generate_uuid()
+        total_bytes = 0
 
-        sub_id = uuid.uuid4().hex[:16]
+        if total_gb > 0:
+            total_bytes = total_gb * 1024 * 1024 * 1024
 
-        total_bytes = volume_gb * 1024 * 1024 * 1024
-
-        expire = self.expire_time(days)
 
         client = {
-            "id": client_uuid,
-            "flow": "",
+            "id": uuid,
             "email": email,
+            "enable": enable,
             "limitIp": 0,
             "totalGB": total_bytes,
-            "expiryTime": expire,
-            "enable": True,
-            "tgId": "",
-            "subId": sub_id
+            "expiryTime": expiry_time,
+            "flow": "",
+            "subId": ""
         }
 
+
         payload = {
-            "id":
-          # -----------------------------
-    # Get Client
+            "id": inbound_id,
+            "settings": json.dumps({
+                "clients": [
+                    client
+                ]
+            })
+        }
+
+
+        return self.post(
+            "/panel/api/inbounds/addClient",
+            payload
+        )
+
+
+
+    def add_vless_client(
+        self,
+        inbound_id,
+        email,
+        uuid,
+        days=30,
+        total_gb=0
+    ):
+        """
+        Create VLESS user with expiration
+        """
+
+        expiry = 0
+
+        if days > 0:
+            expiry = int(
+                (time.time() + days * 86400) * 1000
+            )
+
+
+        return self.add_client(
+            inbound_id=inbound_id,
+            email=email,
+            uuid=uuid,
+            total_gb=total_gb,
+            expiry_time=expiry
+        )
+
+
+
+    # -----------------------------
+    # Client lookup helpers
     # -----------------------------
 
-    def get_client(self, email):
+    def find_client(
+        self,
+        inbound_id,
+        email
+    ):
+        """
+        Find client by email
+        """
 
-        inbounds = self.get_inbounds()
+        result = self.get_inbound(
+            inbound_id
+        )
 
-        for inbound in inbounds:
 
-            settings = inbound.get("settings")
+        if not result.get("success"):
+            return None
 
-            if isinstance(settings, str):
-                settings = json.loads(settings)
 
-            clients = settings.get("clients", [])
+        obj = result.get("obj")
+
+        if not obj:
+            return None
+
+
+        try:
+
+            settings = json.loads(
+                obj["settings"]
+            )
+
+            clients = settings.get(
+                "clients",
+                []
+            )
+
 
             for client in clients:
 
                 if client.get("email") == email:
+                    return client
 
-                    return {
-                        "client": client,
-                        "inbound": inbound
-                    }
+
+        except Exception:
+            pass
+
 
         return None
 
 
+
     # -----------------------------
-    # Delete Client
+    # Update client
     # -----------------------------
 
-    def delete_client(self, email):
+    def update_client(
+        self,
+        inbound_id,
+        client_id,
+        client_data
+    ):
+        """
+        Update existing client
+        """
 
-        client = self.get_client(email)
+        payload = {
+            "id": inbound_id,
+            "clientId": client_id,
+            "settings": json.dumps({
+                "clients": [
+                    client_data
+                ]
+            })
+        }
 
-        if client is None:
-            raise Exception("Client not found")
 
-        inbound_id = client["inbound"]["id"]
-
-        self.post(
-
-            f"/panel/api/inbounds/{inbound_id}/delClient/{email}"
-
+        return self.post(
+            "/panel/api/inbounds/updateClient/" + client_id,
+            payload
         )
 
-        return True
 
 
     # -----------------------------
-    # Reset Traffic
+    # Delete client
     # -----------------------------
 
-    def reset_client_traffic(self, email):
+    def delete_client(
+        self,
+        inbound_id,
+        client_id
+    ):
+        """
+        Delete client from inbound
+        """
 
-        client = self.get_client(email)
+        return self.post(
+            f"/panel/api/inbounds/{inbound_id}/delClient/{client_id}"
+                )
+            # -----------------------------
+    # Client management
+    # -----------------------------
 
-        if client is None:
-            raise Exception("Client not found")
+    def list_clients(self, inbound_id):
+        """
+        Return all clients from inbound
+        """
 
-        inbound_id = client["inbound"]["id"]
-
-        self.post(
-
-            f"/panel/api/inbounds/resetClientTraffic/{inbound_id}/{email}"
-
+        inbound = self.get_inbound(
+            inbound_id
         )
 
-        return True
+        if not inbound.get("success"):
+            return []
+
+
+        try:
+
+            settings = json.loads(
+                inbound["obj"]["settings"]
+            )
+
+            return settings.get(
+                "clients",
+                []
+            )
+
+
+        except Exception:
+
+            return []
+
+
+
+    def get_client_by_email(
+        self,
+        inbound_id,
+        email
+    ):
+        """
+        Search client by email
+        """
+
+        clients = self.list_clients(
+            inbound_id
+        )
+
+
+        for client in clients:
+
+            if client.get("email") == email:
+                return client
+
+
+        return None
+
+
+
+    def delete_client_by_email(
+        self,
+        inbound_id,
+        email
+    ):
+        """
+        Delete client using email
+        """
+
+        client = self.get_client_by_email(
+            inbound_id,
+            email
+        )
+
+
+        if not client:
+            return {
+                "success": False,
+                "error": "Client not found"
+            }
+
+
+        return self.delete_client(
+            inbound_id,
+            client["id"]
+        )
+
+
+
+    def set_client_status(
+        self,
+        inbound_id,
+        client_id,
+        enable=True
+    ):
+        """
+        Enable or disable client
+        """
+
+        clients = self.list_clients(
+            inbound_id
+        )
+
+
+        for client in clients:
+
+            if client.get("id") == client_id:
+
+                client["enable"] = enable
+
+                return self.update_client(
+                    inbound_id,
+                    client_id,
+                    client
+                )
+
+
+        return {
+            "success": False,
+            "error": "Client not found"
+        }
+
+
+
+    def update_client_expiry(
+        self,
+        inbound_id,
+        email,
+        days
+    ):
+        """
+        Extend client expiration
+        """
+
+        client = self.get_client_by_email(
+            inbound_id,
+            email
+        )
+
+
+        if not client:
+
+            return {
+                "success": False,
+                "error": "Client not found"
+            }
+
+
+        expiry = int(
+            (time.time() + days * 86400)
+            * 1000
+        )
+
+
+        client["expiryTime"] = expiry
+
+
+        return self.update_client(
+            inbound_id,
+            client["id"],
+            client
+        )
+
+
+
+    def update_client_traffic(
+        self,
+
+            # -----------------------------
+    # VLESS Link Generator
+    # -----------------------------
+
+    def build_vless_link(
+        self,
+        client,
+        server,
+        port,
+        security="none",
+        remark=None
+    ):
+        """
+        Build VLESS URI
+        """
+
+        uuid = client.get("id")
+
+        email = (
+            remark
+            or client.get("email", "client")
+        )
+
+
+        link = (
+            f"vless://{uuid}@{server}:{port}"
+            f"?security={security}"
+            f"#"
+            f"{email}"
+        )
+
+
+        return link
+
 
 
     # -----------------------------
-    # Client Traffic
+    # Get client subscription
     # -----------------------------
 
-    def get_client_traffic(self, email):
+    def get_subscription_info(
+        self,
+        inbound_id,
+        email
+    ):
+        """
+        Return subscription data
+        """
 
-        client = self.get_client(email)
+        client = self.get_client_by_email(
+            inbound_id,
+            email
+        )
 
-        if client is None:
-            raise Exception("Client not found")
 
-        inbound = client["inbound"]
+        if not client:
 
-        settings = inbound.get("clientStats", [])
+            return {
+                "success": False,
+                "error": "Client not found"
+            }
 
-        for stat in settings:
 
-            if stat.get("email") == email:
+        return {
+            "success": True,
+            "client": client,
+            "subId": client.get(
+                "subId",
+                ""
+            )
+        }
 
-                return stat
 
-        return {}
-      
+
+    def get_subscription_url(
+        self,
+        base_url,
+        sub_id
+    ):
+        """
+        Build subscription URL
+        """
+
+        base_url = base_url.rstrip("/")
+
+        return (
+            f"{base_url}/sub/"
+            f"{sub_id}"
+        )
+
+
+
+    # -----------------------------
+    # User summary
+    # -----------------------------
+
+    def client_info(
+        self,
+        inbound_id,
+        email
+    ):
+        """
+        Return complete client information
+        """
+
+        client = self.get_client_by_email(
+            inbound_id,
+            email
+        )
+
+
+        if not client:
+            return None
+
+
+        return {
+            "email": client.get("email"),
+            "uuid": client.get("id"),
+            "enable": client.get("enable"),
+            "expiry": client.get("expiryTime"),
+            "traffic": client.get("totalGB"),
+            "subId": client.get("subId")
+        }
+
+
+
+    # -----------------------------
+    # Ping API
+    # -----------------------------
+
+    def test_connection(self):
+        """
+        Test panel connection
+        """
+
+        try:
+
+            result = self.get(
+                "/panel/api/server/status"
+            )
+
+            return result.get(
+                "success",
+                False
+            )
+
+        except Exception:
+
+            return False
+
+
+
+    # -----------------------------
+    # Context manager support
+    # -----------------------------
+
+    def __enter__(self):
+
+        self.login()
+
+        return self
+
+
+
+    def __exit__(
+        self,
+        exc_type,
+        exc_value,
+        traceback
+    ):
+
+        self.logout()
