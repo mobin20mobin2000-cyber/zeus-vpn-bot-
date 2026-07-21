@@ -1,0 +1,399 @@
+# xui_api.py
+# X-UI API Client v2
+
+import requests
+import json
+import time
+import uuid
+import base64
+
+
+class XUI_API:
+
+    def __init__(self, host, username, password, timeout=15):
+        self.host = host.rstrip("/")
+        self.username = username
+        self.password = password
+        self.timeout = timeout
+
+        self.session = requests.Session()
+
+        self.session.headers.update({
+            "Accept": "application/json",
+            "Content-Type": "application/json"
+        })
+
+        self.logged_in = False
+
+
+    def _url(self, path):
+        if not path.startswith("/"):
+            path = "/" + path
+
+        return self.host + path
+
+
+    def login(self):
+        try:
+            response = self.session.post(
+                self._url("/login"),
+                json={
+                    "username": self.username,
+                    "password": self.password
+                },
+                timeout=self.timeout
+            )
+
+            data = response.json()
+
+            self.logged_in = bool(
+                data.get("success")
+            )
+
+            return data
+
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+
+    def logout(self):
+
+        try:
+            response = self.session.get(
+                self._url("/logout"),
+                timeout=self.timeout
+            )
+
+            self.logged_in = False
+
+            return response.json()
+
+        except Exception:
+
+            self.logged_in = False
+
+            return {
+                "success": False
+            }
+
+
+
+    def get(self, endpoint, params=None):
+
+        try:
+
+            response = self.session.get(
+                self._url(endpoint),
+                params=params,
+                timeout=self.timeout
+            )
+
+            return response.json()
+
+        except Exception as e:
+
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+
+
+    def post(self, endpoint, data=None):
+
+        try:
+
+            response = self.session.post(
+                self._url(endpoint),
+                json=data,
+                timeout=self.timeout
+            )
+
+            return response.json()
+
+        except Exception as e:
+
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+
+
+    def server_status(self):
+
+        return self.get(
+            "/panel/api/server/status"
+        )
+    # -----------------------------
+    # Inbound methods
+    # -----------------------------
+
+    def get_inbounds(self):
+
+        return self.get(
+            "/panel/api/inbounds/list"
+        )
+
+
+    def get_inbound(self, inbound_id):
+
+        return self.get(
+            f"/panel/api/inbounds/get/{inbound_id}"
+        )
+
+
+
+    # -----------------------------
+    # Client creation
+    # -----------------------------
+
+    def create_client(
+        self,
+        inbound_id,
+        email,
+        client_uuid=None,
+        days=30,
+        traffic_gb=0
+    ):
+
+        if client_uuid is None:
+            client_uuid = str(uuid.uuid4())
+
+
+        expiry = 0
+
+        if days > 0:
+            expiry = int(
+                (time.time() + days * 86400)
+                * 1000
+            )
+
+
+        client = {
+            "id": client_uuid,
+            "email": email,
+            "enable": True,
+            "limitIp": 0,
+            "totalGB": traffic_gb * 1024 * 1024 * 1024,
+            "expiryTime": expiry,
+            "flow": "",
+            "subId": ""
+        }
+
+
+        payload = {
+            "id": inbound_id,
+            "settings": json.dumps({
+                "clients": [
+                    client
+                ]
+            })
+        }
+
+
+        return self.post(
+            "/panel/api/inbounds/addClient",
+            payload
+        )
+
+
+
+    def create_vless_user(
+        self,
+        inbound_id,
+        email,
+        days=30,
+        traffic_gb=0
+    ):
+
+        return self.create_client(
+            inbound_id=inbound_id,
+            email=email,
+            days=days,
+            traffic_gb=traffic_g
+    # -----------------------------
+    # Client update
+    # -----------------------------
+
+    def update_client(
+        self,
+        inbound_id,
+        client_id,
+        client
+    ):
+
+        payload = {
+            "id": inbound_id,
+            "settings": json.dumps({
+                "clients": [
+                    client
+                ]
+            })
+        }
+
+
+        return self.post(
+            f"/panel/api/inbounds/updateClient/{client_id}",
+            payload
+        )
+
+
+
+    # -----------------------------
+    # Delete client
+    # -----------------------------
+
+    def delete_client(
+        self,
+        inbound_id,
+        client_id
+    ):
+
+        return self.post(
+            f"/panel/api/inbounds/{inbound_id}/delClient/{client_id}"
+        )
+
+
+
+    def delete_client_email(
+        self,
+        inbound_id,
+        email
+    ):
+
+        client = self.find_client(
+            inbound_id,
+            email
+        )
+
+
+        if not client:
+
+            return {
+                "success": False,
+                "error": "Client not found"
+            }
+
+
+        return self.delete_client(
+            inbound_id,
+            client["id"]
+        )
+
+
+
+    # -----------------------------
+    # Enable / Disable
+    # -----------------------------
+
+    def set_status(
+        self,
+        inbound_id,
+        email,
+        status=True
+    ):
+
+        client = self.find_client(
+            inbound_id,
+            email
+        )
+
+
+        if not client:
+
+            return {
+                "success": False,
+                "error": "Client not found"
+            }
+
+
+        client["enable"] = status
+
+
+        return self.update_client(
+            inbound_id,
+            client["id"],
+            client
+        )
+
+
+
+    def enable_client(
+        self,
+        inbound_id,
+        email
+    ):
+
+        return self.set_status(
+            inbound_id,
+            email,
+            True
+        )
+
+
+
+    def disable_client(
+        self,
+        inbound_id,
+        email
+    ):
+
+        return self.set_status(
+            inbound_id,
+            email,
+            False
+        )
+
+
+
+    # -----------------------------
+    #
+    # -----------------------------
+    # VLESS builder
+    # -----------------------------
+
+    def build_vless(
+        self,
+        uuid_value,
+        server,
+        port,
+        remark="user",
+        security="none"
+    ):
+
+        return (
+            f"vless://{uuid_value}@{server}:{port}"
+            f"?security={security}"
+            f"#{remark}"
+        )
+
+
+
+    def client_vless(
+        self,
+        inbound_id,
+        email,
+        server,
+        port,
+        security="none"
+    ):
+
+        client = self.find_client(
+            inbound_id,
+            email
+        )
+
+
+        if not client:
+
+            return None
+
+
+        return self.build_vless(
+            uuid_value=client["id"],
+            server=server,
+            port=
